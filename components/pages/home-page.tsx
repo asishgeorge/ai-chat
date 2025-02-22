@@ -3,30 +3,50 @@ import React, { useState, useRef } from 'react';
 import { Button } from '../ui/button';
 import { ModeToggle } from '../elements/toggle-mode';
 import { simulateLLMStreaming } from '@/lib/generator';
-import { CircleSlash, RotateCcw } from 'lucide-react';
+import { CircleSlash, RotateCcw, Bot, User } from 'lucide-react';
 import { Input } from '../ui/input';
 import { ModelOptions } from '../elements/model-options';
 import Markdown from "react-markdown";
 import remarkGfm from 'remark-gfm'
 import { useLLMStore } from '@/store/llm-store';
 import { simulatedResponse } from '@/helper/helper';
+
+interface Message {
+  type: 'user' | 'assistant';
+  content: string;
+}
+
 export default function HomePage() {
-  
-  const [result, setResult] = useState<string>('');
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const streamingOptions = useRef<{ stop: boolean }>({ stop: false });
 
-  const model = useLLMStore().selectedModel
+  const model = useLLMStore().selectedModel;
+
   const handleSendMessage = async () => {
     setLoading(true);
-    setResult(''); 
-    streamingOptions.current.stop = false; 
+    streamingOptions.current.stop = false;
+    
+    // Add user message immediately
+    const userMessage = input;
+    setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
+    setInput(''); // Clear input after sending
+    
+    // Create a new assistant message
+    const newAssistantMessage: Message = { type: 'assistant', content: '' };
+    setMessages(prev => [...prev, newAssistantMessage]);
 
-
+    // Stream the response
+    let processedLength = 0;
     for await (const chunk of simulateLLMStreaming(simulatedResponse, { delayMs: 200, chunkSize: 12, stop: streamingOptions.current.stop })) {
       if (streamingOptions.current.stop) break;
-      setResult((prev) => prev + chunk);
+      setMessages(prev => {
+        const updated = [...prev];
+        updated[updated.length - 1].content = simulatedResponse.slice(0, processedLength + chunk.length);
+        return updated;
+      });
+      processedLength += chunk.length;
     }
 
     setLoading(false);
@@ -37,7 +57,6 @@ export default function HomePage() {
     setLoading(false);
   };
 
-
   return (
     <div className="max-w-7xl relative mx-auto h-[100dvh] flex flex-col justify-center items-center space-y-12">
       <div className="absolute top-4 right-4">
@@ -46,28 +65,56 @@ export default function HomePage() {
 
       <h1 className="font-bold text-2xl">{model.length ? model : 'Chat with me'}</h1>
 
-      <div className="relative max-w-xl w-full p-4 border rounded-md flex flex-col h-96 overflow-y-auto">
-        <div className="flex flex-row justify-between items-start">
-          <div className='w-4/5'>
-            <Markdown className='prose dark:prose-invert prose-h1:text-xl prose-sm' remarkPlugins={[remarkGfm]}>{result || 'No response yet.'}</Markdown>
+      <div className="relative max-w-xl w-full p-4 border rounded-md flex flex-col h-96">
+        <div className="flex-1 overflow-y-auto">
+          <div className="flex flex-col gap-4">
+            {messages.map((message, index) => (
+              <div key={index} className={`flex flex-row items-start gap-2 ${message.type === 'assistant' ? 'justify-start' : 'justify-end'}`}>
+                {message.type === 'assistant' && (
+                  <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
+                    <Bot size={18} />
+                  </div>
+                )}
+                <div className={`max-w-[80%] p-3 rounded-lg ${
+                  message.type === 'assistant' 
+                    ? 'bg-secondary' 
+                    : 'bg-primary text-primary-foreground'
+                }`}>
+                  {message.type === 'assistant' ? (
+                    <Markdown className='prose dark:prose-invert prose-h1:text-xl prose-sm' remarkPlugins={[remarkGfm]}>
+                      {message.content}
+                    </Markdown>
+                  ) : (
+                    message.content
+                  )}
+                </div>
+                {message.type === 'user' && (
+                  <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground">
+                    <User size={18} />
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
-          <div className='1/5 sticky top-0 right-0 flex gap-2'>
+        </div>
 
-            {loading && <Button
-              onClick={handleStop}
-              variant="outline" size="icon">
+        <div className='sticky bottom-0 right-0 flex gap-2 justify-end pt-2'>
+          {loading && (
+            <Button onClick={handleStop} variant="outline" size="icon">
               <CircleSlash />
-            </Button>}
-
-            <Button
-              disabled={loading || !result.length}
-              onClick={() => {
-                setResult('');
-              }} variant="outline" size="icon">
-              <RotateCcw />
             </Button>
+          )}
 
-          </div>
+          <Button
+            disabled={loading || messages.length === 0}
+            onClick={() => {
+              setMessages([]);
+            }}
+            variant="outline"
+            size="icon"
+          >
+            <RotateCcw />
+          </Button>
         </div>
       </div>
 
