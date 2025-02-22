@@ -12,3 +12,49 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  chats     Chat[]
+  starred   Starred[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Chat {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages   Message[]
+  createdAt  DateTime  @default(now())
+}
+
+model Message {
+  id        String    @id @default(uuid())
+  chatId    String
+  chat      Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender    MessageSender
+  content   String
+  llm       String?   // Stores the LLM used (if AI generated)
+  createdAt DateTime  @default(now())
+  starred   Starred[]
+  @@index([chatId])
+}
+
+enum MessageSender {
+  USER
+  AI
+}
+
+model Starred {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messageId String
+  message   Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  llm       String?   // Store the LLM used
+  createdAt DateTime  @default(now())
+
+  @@unique([userId, messageId]) // Prevent duplicate starring
+}
