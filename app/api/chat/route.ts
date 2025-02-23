@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import prisma from '@/lib/primsa';
-import { simulateLLMStreaming } from '@/lib/generator';
+import { streamChatCompletion } from '@/services/chat_service';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -47,7 +47,7 @@ export async function POST(req: Request) {
             throw new Error('Invalid request body');
         }
 
-        const { chat_id, message, user_id } = body;
+        const { chat_id, message, user_id, model } = body;
 
         let chatId = chat_id;
         if (!chatId) {
@@ -121,18 +121,13 @@ export async function POST(req: Request) {
                     }
                 });
 
-                // Stream each chunk if not aborted
-                for await (const chunk of simulateLLMStreaming(message, { 
-                    delayMs: 200, 
-                    chunkSize: 12, 
-                    stop: false 
-                })) {
+                // Replace simulation with OpenAI service
+                for await (const chunk of streamChatCompletion(message, model, signal)) {
                     if (signal?.aborted || writerClosed) break;
 
                     fullContent += chunk;
                     
                     if (isFirstChunk) {
-                        // Send first chunk with both message IDs
                         const initialData = {
                             type: 'chunk',
                             content: chunk,
@@ -146,7 +141,6 @@ export async function POST(req: Request) {
                         );
                         isFirstChunk = false;
                     } else {
-                        // Send regular chunks
                         const data = {
                             type: 'chunk',
                             content: chunk,

@@ -18,7 +18,7 @@ export default function HomePage() {
   const streamingOptions = useRef<{ stop: boolean }>({ stop: false });
   const [chatId, setChatId] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
-
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const model = useLLMStore().selectedModel;
   const defaultEmail = 'default@example.com';
@@ -40,6 +40,10 @@ export default function HomePage() {
       });
   }, [defaultEmail]);
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
   const handleSendMessage = async () => {
     if (!userId) return;
     
@@ -52,10 +56,21 @@ export default function HomePage() {
       setLoading(false);
       return;
     }
-  
-    // Clear input
+
+    // Clear input and immediately add user message
     setInput('');
-    console.log('chatId', chatId);
+    const tempUserMessage = {
+      id: 'temp-user-' + Date.now(),
+      content: userMessage,
+      sender: 'USER',
+      chatId: chatId || 'temp-chat',
+      createdAt: new Date(),
+      status: 'COMPLETED',
+      llm: null
+    } as PrismaMessage;
+    
+    setMessages(prev => [...prev, tempUserMessage]);
+
     try {
       // Start streaming from the API
       const response = await fetch('/api/chat', {
@@ -67,6 +82,7 @@ export default function HomePage() {
           chat_id: chatId,
           message: userMessage,
           user_id: userId,
+          model: model
         }),
         signal: abortController.signal
       });
@@ -100,43 +116,41 @@ export default function HomePage() {
             switch (data.type) {
               case 'chunk':
                 if (isFirstChunk) {
-                  // First chunk contains both message IDs
-                  assistantMessageId = data.messageId;
-                  if (!assistantMessageId || typeof assistantMessageId !== 'string' || !data.userMessageId || typeof data.userMessageId !== 'string') {
-                    throw new Error('Missing assistant message ID');
-                  }
+                  // Immediately create the assistant message with initial content
+                  const assistantMessage = {
+                    id: data.messageId,
+                    content: data.content || '',
+                    sender: 'AI',
+                    chatId: data.chatId,
+                    createdAt: new Date(),
+                    status: 'PENDING',
+                    llm: null
+                  } as PrismaMessage;
 
-                  setChatId(data.chatId);
-                  // Add both messages to the chat
+                  // Update messages with both user and assistant messages
                   setMessages(prev => [
-                    ...prev,
+                    ...prev.filter(msg => msg.id !== tempUserMessage.id),
                     {
+                      ...tempUserMessage,
                       id: data.userMessageId,
-                      content: userMessage,
-                      sender: 'USER',
-                      chatId: data.chatId,
-                      createdAt: new Date(),
-                      status: 'COMPLETED',
-                      llm: null
-                    } as PrismaMessage,
-                    {
-                      id: assistantMessageId,
-                      content: data.content || '',
-                      sender: 'AI',
-                      chatId: data.chatId,
-                      createdAt: new Date(),
-                      status: 'PENDING',
-                      llm: null
-                    } as PrismaMessage
+                      chatId: data.chatId
+                    },
+                    assistantMessage
                   ]);
+                  
+                  assistantMessageId = data.messageId;
+                  setChatId(data.chatId);
                   isFirstChunk = false;
                 } else {
-                  // Update the streaming message
-                  setMessages(prev => prev.map(msg => 
-                    msg.id === assistantMessageId
-                      ? { ...msg, content: msg.content + data.content }
-                      : msg
-                  ));
+                  // Force immediate state update for each chunk
+                  setMessages(prev => {
+                    const updatedMessages = prev.map(msg =>
+                      msg.id === assistantMessageId
+                        ? { ...msg, content: msg.content + data.content }
+                        : msg
+                    );
+                    return [...updatedMessages];
+                  });
                 }
                 break;
   
@@ -232,6 +246,7 @@ export default function HomePage() {
                 )}
               </div>
             ))}
+            <div ref={messagesEndRef} />
           </div>
         </div>
 

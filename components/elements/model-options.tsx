@@ -10,10 +10,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useLLMStore } from "@/store/llm-store"
-
+import { models, Model } from "@/helper/models"
 
 // Modify as needed
-const options = ['Model 1', 'Model 2', 'Model 3']
+const options: Model[] = models
 
 export function ModelOptions() {
   const { selectedModel, setSelectedModel } = useLLMStore()
@@ -33,8 +33,8 @@ export function ModelOptions() {
         <DropdownMenuGroup>
           {
             options.map((model) => (
-              <DropdownMenuItem key={model} onSelect={() => handleSelectModel(model)}>
-                <span>{model}</span>
+              <DropdownMenuItem key={model.id} onSelect={() => handleSelectModel(model.id)}>
+                <span>{model.name}</span>
               </DropdownMenuItem>
             ))
           }
