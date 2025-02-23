@@ -23,5 +23,8 @@ Add a page called `/starred` where the user can view all the system prompts they
 
 - Ensure you have Docker installed
 - Run `npm i` to install the dependencies
+- Setup the .env file with the necessary environment variables
+  - DATABASE_URL: The URL of your database
+  - OPENAI_API_KEY: Your OpenAI API key
 - Run `npx prisma migrate dev` to set up the database
 - Run `npm run dev` to start the development server
