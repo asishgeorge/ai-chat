@@ -1,8 +1,7 @@
 'use client';
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '../ui/button';
 import { ModeToggle } from '../elements/toggle-mode';
-import { simulateLLMStreaming } from '@/lib/generator';
 import { CircleSlash, RotateCcw, Bot, User } from 'lucide-react';
 import { Input } from '../ui/input';
 import { ModelOptions } from '../elements/model-options';
@@ -10,46 +9,184 @@ import Markdown from "react-markdown";
 import remarkGfm from 'remark-gfm'
 import { useLLMStore } from '@/store/llm-store';
 import { simulatedResponse } from '@/helper/helper';
-
-interface Message {
-  type: 'user' | 'assistant';
-  content: string;
-}
+import { Message as PrismaMessage } from '@prisma/client';
 
 export default function HomePage() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<PrismaMessage[]>([]);
   const [input, setInput] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const streamingOptions = useRef<{ stop: boolean }>({ stop: false });
+  const [chatId, setChatId] = useState<string>('');
+  const [userId, setUserId] = useState<string>('');
+
 
   const model = useLLMStore().selectedModel;
+  const defaultEmail = 'default@example.com';
+
+  useEffect(() => {
+    // get user from email 
+    fetch('/api/users?email=' + encodeURIComponent(defaultEmail))
+      .then(res => {
+        if (!res.ok) throw new Error('Failed to fetch user');
+        return res.json();
+      })
+      .then(data => {
+        if (data.error) throw new Error(data.error);
+        console.log('data', data);
+        setUserId(data.id);
+      })
+      .catch(err => {
+        console.error('Error:', err);
+      });
+  }, [defaultEmail]);
 
   const handleSendMessage = async () => {
+    if (!userId) return;
+    
+    const abortController = new AbortController();
     setLoading(true);
     streamingOptions.current.stop = false;
     
-    // Add user message immediately
-    const userMessage = input;
-    setMessages(prev => [...prev, { type: 'user', content: userMessage }]);
-    setInput(''); // Clear input after sending
-    
-    // Create a new assistant message
-    const newAssistantMessage: Message = { type: 'assistant', content: '' };
-    setMessages(prev => [...prev, newAssistantMessage]);
-
-    // Stream the response
-    let processedLength = 0;
-    for await (const chunk of simulateLLMStreaming(simulatedResponse, { delayMs: 200, chunkSize: 12, stop: streamingOptions.current.stop })) {
-      if (streamingOptions.current.stop) break;
-      setMessages(prev => {
-        const updated = [...prev];
-        updated[updated.length - 1].content = simulatedResponse.slice(0, processedLength + chunk.length);
-        return updated;
-      });
-      processedLength += chunk.length;
+    const userMessage = input.trim();
+    if (!userMessage) {
+      setLoading(false);
+      return;
     }
+  
+    // Clear input
+    setInput('');
+    console.log('chatId', chatId);
+    try {
+      // Start streaming from the API
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message: userMessage,
+          user_id: userId,
+        }),
+        signal: abortController.signal
+      });
+  
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+  
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+  
+      if (!reader) {
+        throw new Error('No reader available');
+      }
+  
+      let isFirstChunk = true;
+      let assistantMessageId: string | null = null;
+  
+      // Read the stream
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done || streamingOptions.current.stop) break;
+  
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+  
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = JSON.parse(line.slice(6));
+  
+            switch (data.type) {
+              case 'chunk':
+                if (isFirstChunk) {
+                  // First chunk contains both message IDs
+                  assistantMessageId = data.messageId;
+                  if (!assistantMessageId || typeof assistantMessageId !== 'string' || !data.userMessageId || typeof data.userMessageId !== 'string') {
+                    throw new Error('Missing assistant message ID');
+                  }
 
-    setLoading(false);
+                  setChatId(data.chatId);
+                  // Add both messages to the chat
+                  setMessages(prev => [
+                    ...prev,
+                    {
+                      id: data.userMessageId,
+                      content: userMessage,
+                      sender: 'USER',
+                      chatId: data.chatId,
+                      createdAt: new Date(),
+                      status: 'COMPLETED',
+                      llm: null
+                    } as PrismaMessage,
+                    {
+                      id: assistantMessageId,
+                      content: data.content || '',
+                      sender: 'AI',
+                      chatId: data.chatId,
+                      createdAt: new Date(),
+                      status: 'PENDING',
+                      llm: null
+                    } as PrismaMessage
+                  ]);
+                  isFirstChunk = false;
+                } else {
+                  // Update the streaming message
+                  setMessages(prev => prev.map(msg => 
+                    msg.id === assistantMessageId
+                      ? { ...msg, content: msg.content + data.content }
+                      : msg
+                  ));
+                }
+                break;
+  
+              case 'interrupt':
+                if (assistantMessageId) {
+                  setMessages(prev => prev.map(msg => 
+                    msg.id === assistantMessageId
+                      ? { 
+                          ...msg, 
+                          content: data.finalContent,
+                          status: 'INTERRUPTED' 
+                        }
+                      : msg
+                  ));
+                }
+                return;
+  
+              case 'error':
+                console.error('Error in stream:', data.error);
+                if (assistantMessageId) {
+                  // Remove the assistant message if there was an error
+                  setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
+                }
+                return;
+  
+              case '[DONE]':
+                if (assistantMessageId) {
+                  setMessages(prev => prev.map(msg => 
+                    msg.id === assistantMessageId
+                      ? { ...msg, status: 'COMPLETED' }
+                      : msg
+                  ));
+                }
+                return;
+            }
+          }
+        }
+      }
+  
+      if (streamingOptions.current.stop) {
+        abortController.abort();
+      }
+  
+    } catch (error) {
+      console.error('Streaming error:', error);
+      // setError('Failed to send message. Please try again.');
+    } finally {
+      setLoading(false);
+      streamingOptions.current.stop = false;
+    }
   };
 
   const handleStop = () => {
@@ -69,18 +206,18 @@ export default function HomePage() {
         <div className="flex-1 overflow-y-auto">
           <div className="flex flex-col gap-4">
             {messages.map((message, index) => (
-              <div key={index} className={`flex flex-row items-start gap-2 ${message.type === 'assistant' ? 'justify-start' : 'justify-end'}`}>
-                {message.type === 'assistant' && (
+              <div key={index} className={`flex flex-row items-start gap-2 ${message.sender === 'AI' ? 'justify-start' : 'justify-end'}`}>
+                {message.sender === 'AI' && (
                   <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
                     <Bot size={18} />
                   </div>
                 )}
                 <div className={`max-w-[80%] p-3 rounded-lg ${
-                  message.type === 'assistant' 
+                  message.sender === 'AI' 
                     ? 'bg-secondary' 
                     : 'bg-primary text-primary-foreground'
                 }`}>
-                  {message.type === 'assistant' ? (
+                  {message.sender === 'AI' ? (
                     <Markdown className='prose dark:prose-invert prose-h1:text-xl prose-sm' remarkPlugins={[remarkGfm]}>
                       {message.content}
                     </Markdown>
@@ -88,7 +225,7 @@ export default function HomePage() {
                     message.content
                   )}
                 </div>
-                {message.type === 'user' && (
+                {message.sender === 'USER' && (
                   <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground">
                     <User size={18} />
                   </div>

@@ -39,12 +39,19 @@ model Message {
   llm       String?   // Stores the LLM used (if AI generated)
   createdAt DateTime  @default(now())
   starred   Starred[]
+  status    MessageStatus
   @@index([chatId])
 }
 
 enum MessageSender {
   USER
   AI
+}
+
+enum MessageStatus {
+  PENDING
+  INTERRUPTED
+  COMPLETED
 }
 
 model Starred {
