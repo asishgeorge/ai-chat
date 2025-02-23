@@ -11,6 +11,7 @@ export async function POST(req: Request) {
     });
     return NextResponse.json(message);
   } catch (error) {
+    console.log('error', error);
     return NextResponse.json({ error: 'Failed to create message' }, { status: 500 });
   }
 }
@@ -26,6 +27,7 @@ export async function GET(req: Request) {
     });
     return NextResponse.json(messages);
   } catch (error) {
+    console.log('error', error);
     return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500 });
   }
 }
@@ -41,6 +43,7 @@ export async function PATCH(req: Request) {
     });
     return NextResponse.json(message);
   } catch (error) {
+    console.log('error', error);
     return NextResponse.json({ error: 'Failed to update message' }, { status: 500 });
   }
 } 
