@@ -1,4 +1,4 @@
-import {chatCompletion} from './openai_service'
+import {chatCompletion} from './openai.service'
 import { models, Model } from '@/helper/models'
 
 export async function* streamChatCompletion(

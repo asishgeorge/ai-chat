@@ -9,7 +9,9 @@ import Markdown from "react-markdown";
 import remarkGfm from 'remark-gfm'
 import { useLLMStore } from '@/store/llm-store';
 import { Message as PrismaMessage } from '@prisma/client';
-import { models, Model } from '@/helper/models';
+import { models } from '@/helper/models';
+import { startChatStream, createTempUserMessage } from '@/services/chat.service';
+import { handleInitialChunk, handleStreamData } from '@/services/message.service';
 
 export default function HomePage() {
   const [messages, setMessages] = useState<PrismaMessage[]>([]);
@@ -71,28 +73,6 @@ export default function HomePage() {
     }
   };
 
-  const createTempUserMessage = (content: string, chatId: string): PrismaMessage => ({
-    id: 'temp-user-' + Date.now(),
-    content,
-    sender: 'USER',
-    chatId: chatId || 'temp-chat',
-    createdAt: new Date(),
-    status: 'COMPLETED',
-    llm: null
-  });
-
-  const startChatStream = async (message: string, userId: string, chatId: string, model: string, signal: AbortSignal) => {
-    const response = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, message, user_id: userId, model }),
-      signal
-    });
-
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    return response;
-  };
-
   const processStreamResponse = async (response: Response, tempUserMessage: PrismaMessage, abortController: AbortController) => {
     const reader = response.body?.getReader();
     const decoder = new TextDecoder();
@@ -110,131 +90,37 @@ export default function HomePage() {
         if (!line.startsWith('data: ')) continue;
         
         const data = JSON.parse(line.slice(6));
-        await handleStreamData(data, isFirstChunk, tempUserMessage, assistantMessageId);
         
-        if (data.type === 'chunk' && isFirstChunk) {
-          isFirstChunk = false;
-          assistantMessageId = data.messageId;
+        if (data.type === 'chunk') {
+          if (isFirstChunk) {
+            const newMessages = handleInitialChunk(data, tempUserMessage);
+            setMessages(prev => [...prev.filter(msg => msg.id !== tempUserMessage.id), ...newMessages]);
+            setChatId(data.chatId);
+            assistantMessageId = data.messageId;
+            isFirstChunk = false;
+          } else {
+            setMessages(prev => {
+              const updatedMessages = prev.map(msg =>
+                msg.id === assistantMessageId
+                  ? { ...msg, content: msg.content + data.content }
+                  : msg
+              );
+              return [...updatedMessages];
+            });
+          }
+        } else if (data.type === 'interrupt') {
+          setMessages(prev => handleStreamData.interrupt(prev, data, assistantMessageId));
+        } else if (data.type === 'error') {
+          console.error('Error in stream:', data.error);
+          setMessages(prev => handleStreamData.error(prev, assistantMessageId));
+        } else if (data.type === '[DONE]') {
+          setMessages(prev => handleStreamData.done(prev, assistantMessageId));
         }
       }
     }
 
     if (streamingOptions.current.stop) {
       abortController.abort();
-    }
-  };
-
-  const handleStreamData = async (
-    data: any, 
-    isFirstChunk: boolean, 
-    tempUserMessage: PrismaMessage, 
-    assistantMessageId: string | null
-  ) => {
-    switch (data.type) {
-      case 'chunk':
-        handleChunkData(data, isFirstChunk, tempUserMessage, assistantMessageId);
-        break;
-      case 'interrupt':
-        handleInterruptData(data, assistantMessageId);
-        break;
-      case 'error':
-        handleErrorData(data, assistantMessageId);
-        break;
-      case '[DONE]':
-        handleDoneData(assistantMessageId);
-        break;
-    }
-  };
-
-  const handleInitialChunk = (
-    data: any,
-    tempUserMessage: PrismaMessage
-  ) => {
-    const assistantMessage = {
-      id: data.messageId,
-      content: data.content || '',
-      sender: 'AI',
-      chatId: data.chatId,
-      createdAt: new Date(),
-      status: 'PENDING',
-      llm: null
-    } as PrismaMessage;
-
-    setMessages(prev => [
-      ...prev.filter(msg => msg.id !== tempUserMessage.id),
-      {
-        ...tempUserMessage,
-        id: data.userMessageId,
-        chatId: data.chatId
-      },
-      assistantMessage
-    ]);
-    
-    setChatId(data.chatId);
-    return data.messageId;
-  };
-
-  const handleSubsequentChunk = (
-    data: any,
-    assistantMessageId: string
-  ) => {
-    setMessages(prev => {
-      const updatedMessages = prev.map(msg =>
-        msg.id === assistantMessageId
-          ? { ...msg, content: msg.content + data.content }
-          : msg
-      );
-      return [...updatedMessages];
-    });
-  };
-
-  const handleChunkData = (
-    data: any, 
-    isFirstChunk: boolean, 
-    tempUserMessage: PrismaMessage, 
-    assistantMessageId: string | null
-  ) => {
-    return isFirstChunk 
-      ? handleInitialChunk(data, tempUserMessage)
-      : handleSubsequentChunk(data, assistantMessageId!);
-  };
-
-  const handleInterruptData = (
-    data: any, 
-    assistantMessageId: string | null
-  ) => {
-    if (assistantMessageId) {
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId
-          ? { 
-              ...msg, 
-              content: data.finalContent,
-              status: 'INTERRUPTED' 
-            }
-          : msg
-      ));
-    }
-  };
-
-  const handleErrorData = (
-    data: any, 
-    assistantMessageId: string | null
-  ) => {
-    console.error('Error in stream:', data.error);
-    if (assistantMessageId) {
-      setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
-    }
-  };
-
-  const handleDoneData = (
-    assistantMessageId: string | null
-  ) => {
-    if (assistantMessageId) {
-      setMessages(prev => prev.map(msg => 
-        msg.id === assistantMessageId
-          ? { ...msg, status: 'COMPLETED' }
-          : msg
-      ));
     }
   };
 
