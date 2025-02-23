@@ -86,12 +86,21 @@ export async function GET(req: NextRequest) {
         userId: userId
       },
       select: {
-        messageId: true
+        messageId: true,
+        message: { // Associate with messages table
+          select: {
+            id: true,
+            content: true,
+            sender: true,
+            createdAt: true,
+            llm: true,
+          }
+        }
       }
     });
 
     return NextResponse.json({ 
-      starredMessages: starredMessages.map(star => star.messageId) 
+      starredMessages: starredMessages
     });
   } catch (error) {
     console.error("Error fetching starred messages:", error);

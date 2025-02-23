@@ -1,7 +1,6 @@
 'use client';
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '../ui/button';
-import { ModeToggle } from '../elements/toggle-mode';
 import { CircleSlash, RotateCcw, Bot, User, Star } from 'lucide-react';
 import { Input } from '../ui/input';
 import { ModelOptions } from '../elements/model-options';
@@ -12,6 +11,9 @@ import { Message as PrismaMessage } from '@prisma/client';
 import { models } from '@/helper/models';
 import { startChatStream, createTempUserMessage } from '@/services/chat.service';
 import { handleInitialChunk, handleStreamData } from '@/services/message.service';
+import { useUserStore } from '@/store/user-store';
+import { useRouter } from 'next/navigation';
+import { Header } from '../elements/header';
 
 export default function HomePage() {
   const [messages, setMessages] = useState<PrismaMessage[]>([]);
@@ -22,34 +24,26 @@ export default function HomePage() {
   const [userId, setUserId] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [starredMessages, setStarredMessages] = useState<string[]>([]);
+  const { user } = useUserStore();
+  const router = useRouter();
 
   const { setSelectedModel } = useLLMStore();
 
   const model = useLLMStore().selectedModel;
-  const defaultEmail = 'default@example.com';
 
   useEffect(() => {
-    // get user from email 
-    fetch('/api/users?email=' + encodeURIComponent(defaultEmail))
-      .then(res => {
-        if (!res.ok) throw new Error('Failed to fetch user');
-        return res.json();
-      })
-      .then(data => {
-        if (data.error) throw new Error(data.error);
-        console.log('data', data);
-        setUserId(data.id);
-      })
-      .catch(err => {
-        console.error('Error:', err);
-      });
-  }, [defaultEmail]);
-
-  useEffect(() => {
+    console.log('user', user);
+    if (!user.id) {
+      // go to login page
+      router.push('/login');
+    }
     // Set the first model as the default selected model on page load
     if (models.length > 0) {
       setSelectedModel(models[0].id); // Assuming models have an 'id' property
     }
+
+    setUserId(user.id);
+
   }, []);
 
   useEffect(() => {
@@ -188,82 +182,81 @@ export default function HomePage() {
   };
 
   return (
-    <div className="max-w-7xl relative mx-auto h-[100dvh] flex flex-col items-center space-y-12">
-      <div className="absolute top-4 right-4">
-        <ModeToggle />
-      </div>
+    <div className="min-h-screen flex flex-col">
+      <Header />
+      <div className="w-full flex-1 max-w-7xl relative mx-auto flex flex-col items-center space-y-12 py-12">
+        <h1 className="font-bold text-2xl">{model.length ? model : 'Chat with me'}</h1>
 
-      <h1 className="font-bold text-2xl">{model.length ? model : 'Chat with me'}</h1>
-
-      <div className="relative max-w-xl w-full p-4 border rounded-md flex flex-col h-[70vh]">
-        <div className="flex-1 overflow-y-auto">
-          <div className="flex flex-col gap-4">
-            {messages.map((message, index) => (
-              <div key={index} className={`flex flex-row items-start gap-2 ${message.sender === 'AI' ? 'justify-start' : 'justify-end'}`}>
-                <button onClick={() => toggleStarMessage(message.id)} className={`star-button ${starredMessages.includes(message.id) ? 'starred' : ''}`}>
-                  <Star className={`w-5 h-5 ${starredMessages.includes(message.id) ? 'text-yellow-500' : 'text-gray-500'}`} />
-                </button>
-                {message.sender === 'AI' && (
-                  <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
-                    <Bot size={18} />
+        <div className="relative max-w-xl w-full p-4 border rounded-md flex flex-col h-[70vh]">
+          <div className="flex-1 overflow-y-auto">
+            <div className="flex flex-col gap-4">
+              {messages.map((message, index) => (
+                <div key={index} className={`flex flex-row items-start gap-2 ${message.sender === 'AI' ? 'justify-start' : 'justify-end'}`}>
+                  <button onClick={() => toggleStarMessage(message.id)} className={`star-button ${starredMessages.includes(message.id) ? 'starred' : ''}`}>
+                    <Star className={`w-5 h-5 ${starredMessages.includes(message.id) ? 'text-yellow-500' : 'text-gray-500'}`} />
+                  </button>
+                  {message.sender === 'AI' && (
+                    <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
+                      <Bot size={18} />
+                    </div>
+                  )}
+                  <div className={`max-w-[80%] p-3 rounded-lg ${
+                    message.sender === 'AI' 
+                      ? 'bg-secondary' 
+                      : 'bg-primary text-primary-foreground'
+                  }`}>
+                    {message.sender === 'AI' ? (
+                      <Markdown className='prose dark:prose-invert prose-h1:text-xl prose-sm' remarkPlugins={[remarkGfm]}>
+                        {message.content}
+                      </Markdown>
+                    ) : (
+                      message.content
+                    )}
                   </div>
-                )}
-                <div className={`max-w-[80%] p-3 rounded-lg ${
-                  message.sender === 'AI' 
-                    ? 'bg-secondary' 
-                    : 'bg-primary text-primary-foreground'
-                }`}>
-                  {message.sender === 'AI' ? (
-                    <Markdown className='prose dark:prose-invert prose-h1:text-xl prose-sm' remarkPlugins={[remarkGfm]}>
-                      {message.content}
-                    </Markdown>
-                  ) : (
-                    message.content
+                  {message.sender === 'USER' && (
+                    <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground">
+                      <User size={18} />
+                    </div>
                   )}
                 </div>
-                {message.sender === 'USER' && (
-                  <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground">
-                    <User size={18} />
-                  </div>
-                )}
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+          </div>
+
+          <div className='sticky bottom-0 right-0 flex gap-2 justify-end pt-2'>
+            {loading && (
+              <Button onClick={handleStop} variant="outline" size="icon">
+                <CircleSlash />
+              </Button>
+            )}
+
+            <Button
+              disabled={loading || messages.length === 0}
+              onClick={() => {
+                setMessages([]);
+              }}
+              variant="outline"
+              size="icon"
+            >
+              <RotateCcw />
+            </Button>
           </div>
         </div>
 
-        <div className='sticky bottom-0 right-0 flex gap-2 justify-end pt-2'>
-          {loading && (
-            <Button onClick={handleStop} variant="outline" size="icon">
-              <CircleSlash />
+        <div className="max-w-xl w-full fixed bottom-5">
+          <form onSubmit={(e) => { e.preventDefault(); handleSendMessage() }} className="flex flex-row w-full items-end gap-2">
+            <ModelOptions />
+            <Input
+              placeholder="Type your message here."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+            />
+            <Button type='submit' disabled={loading || !input.length}>
+              {loading ? 'Sending...' : 'Send message'}
             </Button>
-          )}
-
-          <Button
-            disabled={loading || messages.length === 0}
-            onClick={() => {
-              setMessages([]);
-            }}
-            variant="outline"
-            size="icon"
-          >
-            <RotateCcw />
-          </Button>
+          </form>
         </div>
-      </div>
-
-      <div className="max-w-xl w-full fixed bottom-5">
-        <form onSubmit={(e) => { e.preventDefault(); handleSendMessage() }} className="flex flex-row w-full items-end gap-2">
-          <ModelOptions />
-          <Input
-            placeholder="Type your message here."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-          />
-          <Button type='submit' disabled={loading || !input.length}>
-            {loading ? 'Sending...' : 'Send message'}
-          </Button>
-        </form>
       </div>
     </div>
   );
