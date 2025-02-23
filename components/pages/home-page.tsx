@@ -8,8 +8,8 @@ import { ModelOptions } from '../elements/model-options';
 import Markdown from "react-markdown";
 import remarkGfm from 'remark-gfm'
 import { useLLMStore } from '@/store/llm-store';
-import { simulatedResponse } from '@/helper/helper';
 import { Message as PrismaMessage } from '@prisma/client';
+import { models, Model } from '@/helper/models';
 
 export default function HomePage() {
   const [messages, setMessages] = useState<PrismaMessage[]>([]);
@@ -19,6 +19,8 @@ export default function HomePage() {
   const [chatId, setChatId] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const { setSelectedModel } = useLLMStore();
 
   const model = useLLMStore().selectedModel;
   const defaultEmail = 'default@example.com';
@@ -41,165 +43,198 @@ export default function HomePage() {
   }, [defaultEmail]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    // Set the first model as the default selected model on page load
+    if (models.length > 0) {
+      setSelectedModel(models[0].id); // Assuming models have an 'id' property
+    }
+  }, []);
 
   const handleSendMessage = async () => {
-    if (!userId) return;
+    if (!userId || !input.trim()) return;
     
     const abortController = new AbortController();
     setLoading(true);
     streamingOptions.current.stop = false;
-    
-    const userMessage = input.trim();
-    if (!userMessage) {
-      setLoading(false);
-      return;
-    }
 
-    // Clear input and immediately add user message
+    const userMessage = createTempUserMessage(input.trim(), chatId);
     setInput('');
-    const tempUserMessage = {
-      id: 'temp-user-' + Date.now(),
-      content: userMessage,
-      sender: 'USER',
-      chatId: chatId || 'temp-chat',
-      createdAt: new Date(),
-      status: 'COMPLETED',
-      llm: null
-    } as PrismaMessage;
-    
-    setMessages(prev => [...prev, tempUserMessage]);
+    setMessages(prev => [...prev, userMessage]);
 
     try {
-      // Start streaming from the API
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          chat_id: chatId,
-          message: userMessage,
-          user_id: userId,
-          model: model
-        }),
-        signal: abortController.signal
-      });
-  
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-  
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-  
-      if (!reader) {
-        throw new Error('No reader available');
-      }
-  
-      let isFirstChunk = true;
-      let assistantMessageId: string | null = null;
-  
-      // Read the stream
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done || streamingOptions.current.stop) break;
-  
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-  
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = JSON.parse(line.slice(6));
-  
-            switch (data.type) {
-              case 'chunk':
-                if (isFirstChunk) {
-                  // Immediately create the assistant message with initial content
-                  const assistantMessage = {
-                    id: data.messageId,
-                    content: data.content || '',
-                    sender: 'AI',
-                    chatId: data.chatId,
-                    createdAt: new Date(),
-                    status: 'PENDING',
-                    llm: null
-                  } as PrismaMessage;
-
-                  // Update messages with both user and assistant messages
-                  setMessages(prev => [
-                    ...prev.filter(msg => msg.id !== tempUserMessage.id),
-                    {
-                      ...tempUserMessage,
-                      id: data.userMessageId,
-                      chatId: data.chatId
-                    },
-                    assistantMessage
-                  ]);
-                  
-                  assistantMessageId = data.messageId;
-                  setChatId(data.chatId);
-                  isFirstChunk = false;
-                } else {
-                  // Force immediate state update for each chunk
-                  setMessages(prev => {
-                    const updatedMessages = prev.map(msg =>
-                      msg.id === assistantMessageId
-                        ? { ...msg, content: msg.content + data.content }
-                        : msg
-                    );
-                    return [...updatedMessages];
-                  });
-                }
-                break;
-  
-              case 'interrupt':
-                if (assistantMessageId) {
-                  setMessages(prev => prev.map(msg => 
-                    msg.id === assistantMessageId
-                      ? { 
-                          ...msg, 
-                          content: data.finalContent,
-                          status: 'INTERRUPTED' 
-                        }
-                      : msg
-                  ));
-                }
-                return;
-  
-              case 'error':
-                console.error('Error in stream:', data.error);
-                if (assistantMessageId) {
-                  // Remove the assistant message if there was an error
-                  setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
-                }
-                return;
-  
-              case '[DONE]':
-                if (assistantMessageId) {
-                  setMessages(prev => prev.map(msg => 
-                    msg.id === assistantMessageId
-                      ? { ...msg, status: 'COMPLETED' }
-                      : msg
-                  ));
-                }
-                return;
-            }
-          }
-        }
-      }
-  
-      if (streamingOptions.current.stop) {
-        abortController.abort();
-      }
-  
+      const response = await startChatStream(userMessage.content, userId, chatId, model, abortController.signal);
+      await processStreamResponse(response, userMessage, abortController);
     } catch (error) {
       console.error('Streaming error:', error);
-      // setError('Failed to send message. Please try again.');
     } finally {
       setLoading(false);
       streamingOptions.current.stop = false;
+    }
+  };
+
+  const createTempUserMessage = (content: string, chatId: string): PrismaMessage => ({
+    id: 'temp-user-' + Date.now(),
+    content,
+    sender: 'USER',
+    chatId: chatId || 'temp-chat',
+    createdAt: new Date(),
+    status: 'COMPLETED',
+    llm: null
+  });
+
+  const startChatStream = async (message: string, userId: string, chatId: string, model: string, signal: AbortSignal) => {
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message, user_id: userId, model }),
+      signal
+    });
+
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    return response;
+  };
+
+  const processStreamResponse = async (response: Response, tempUserMessage: PrismaMessage, abortController: AbortController) => {
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    if (!reader) throw new Error('No reader available');
+
+    let isFirstChunk = true;
+    let assistantMessageId: string | null = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done || streamingOptions.current.stop) break;
+
+      const lines = decoder.decode(value).split('\n');
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        
+        const data = JSON.parse(line.slice(6));
+        await handleStreamData(data, isFirstChunk, tempUserMessage, assistantMessageId);
+        
+        if (data.type === 'chunk' && isFirstChunk) {
+          isFirstChunk = false;
+          assistantMessageId = data.messageId;
+        }
+      }
+    }
+
+    if (streamingOptions.current.stop) {
+      abortController.abort();
+    }
+  };
+
+  const handleStreamData = async (
+    data: any, 
+    isFirstChunk: boolean, 
+    tempUserMessage: PrismaMessage, 
+    assistantMessageId: string | null
+  ) => {
+    switch (data.type) {
+      case 'chunk':
+        handleChunkData(data, isFirstChunk, tempUserMessage, assistantMessageId);
+        break;
+      case 'interrupt':
+        handleInterruptData(data, assistantMessageId);
+        break;
+      case 'error':
+        handleErrorData(data, assistantMessageId);
+        break;
+      case '[DONE]':
+        handleDoneData(assistantMessageId);
+        break;
+    }
+  };
+
+  const handleInitialChunk = (
+    data: any,
+    tempUserMessage: PrismaMessage
+  ) => {
+    const assistantMessage = {
+      id: data.messageId,
+      content: data.content || '',
+      sender: 'AI',
+      chatId: data.chatId,
+      createdAt: new Date(),
+      status: 'PENDING',
+      llm: null
+    } as PrismaMessage;
+
+    setMessages(prev => [
+      ...prev.filter(msg => msg.id !== tempUserMessage.id),
+      {
+        ...tempUserMessage,
+        id: data.userMessageId,
+        chatId: data.chatId
+      },
+      assistantMessage
+    ]);
+    
+    setChatId(data.chatId);
+    return data.messageId;
+  };
+
+  const handleSubsequentChunk = (
+    data: any,
+    assistantMessageId: string
+  ) => {
+    setMessages(prev => {
+      const updatedMessages = prev.map(msg =>
+        msg.id === assistantMessageId
+          ? { ...msg, content: msg.content + data.content }
+          : msg
+      );
+      return [...updatedMessages];
+    });
+  };
+
+  const handleChunkData = (
+    data: any, 
+    isFirstChunk: boolean, 
+    tempUserMessage: PrismaMessage, 
+    assistantMessageId: string | null
+  ) => {
+    return isFirstChunk 
+      ? handleInitialChunk(data, tempUserMessage)
+      : handleSubsequentChunk(data, assistantMessageId!);
+  };
+
+  const handleInterruptData = (
+    data: any, 
+    assistantMessageId: string | null
+  ) => {
+    if (assistantMessageId) {
+      setMessages(prev => prev.map(msg => 
+        msg.id === assistantMessageId
+          ? { 
+              ...msg, 
+              content: data.finalContent,
+              status: 'INTERRUPTED' 
+            }
+          : msg
+      ));
+    }
+  };
+
+  const handleErrorData = (
+    data: any, 
+    assistantMessageId: string | null
+  ) => {
+    console.error('Error in stream:', data.error);
+    if (assistantMessageId) {
+      setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
+    }
+  };
+
+  const handleDoneData = (
+    assistantMessageId: string | null
+  ) => {
+    if (assistantMessageId) {
+      setMessages(prev => prev.map(msg => 
+        msg.id === assistantMessageId
+          ? { ...msg, status: 'COMPLETED' }
+          : msg
+      ));
     }
   };
 
@@ -208,15 +243,23 @@ export default function HomePage() {
     setLoading(false);
   };
 
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
   return (
-    <div className="max-w-7xl relative mx-auto h-[100dvh] flex flex-col justify-center items-center space-y-12">
+    <div className="max-w-7xl relative mx-auto h-[100dvh] flex flex-col items-center space-y-12">
       <div className="absolute top-4 right-4">
         <ModeToggle />
       </div>
 
       <h1 className="font-bold text-2xl">{model.length ? model : 'Chat with me'}</h1>
 
-      <div className="relative max-w-xl w-full p-4 border rounded-md flex flex-col h-96">
+      <div className="relative max-w-xl w-full p-4 border rounded-md flex flex-col h-[70vh]">
         <div className="flex-1 overflow-y-auto">
           <div className="flex flex-col gap-4">
             {messages.map((message, index) => (
