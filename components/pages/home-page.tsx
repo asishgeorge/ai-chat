@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button } from '../ui/button';
 import { ModeToggle } from '../elements/toggle-mode';
-import { CircleSlash, RotateCcw, Bot, User } from 'lucide-react';
+import { CircleSlash, RotateCcw, Bot, User, Star } from 'lucide-react';
 import { Input } from '../ui/input';
 import { ModelOptions } from '../elements/model-options';
 import Markdown from "react-markdown";
@@ -21,6 +21,7 @@ export default function HomePage() {
   const [chatId, setChatId] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [starredMessages, setStarredMessages] = useState<string[]>([]);
 
   const { setSelectedModel } = useLLMStore();
 
@@ -50,6 +51,24 @@ export default function HomePage() {
       setSelectedModel(models[0].id); // Assuming models have an 'id' property
     }
   }, []);
+
+  useEffect(() => {
+    if (userId) {
+      fetch(`/api/star?userId=${userId}`)
+        .then(res => {
+          if (!res.ok) throw new Error('Failed to fetch starred messages');
+          return res.json();
+        })
+        .then(data => {
+          if (data.starredMessages) {
+            setStarredMessages(data.starredMessages);
+          }
+        })
+        .catch(error => {
+          console.error('Error fetching starred messages:', error);
+        });
+    }
+  }, [userId]);
 
   const handleSendMessage = async () => {
     if (!userId || !input.trim()) return;
@@ -137,6 +156,37 @@ export default function HomePage() {
     scrollToBottom();
   }, [messages]);
 
+  const toggleStarMessage = async (messageId: string) => {
+    try {
+      const response = await fetch('/api/star', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messageId,
+          userId,
+          starred: !starredMessages.includes(messageId)
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to toggle star status');
+      }
+
+      // Update local state only after successful API call
+      setStarredMessages(prev => 
+        prev.includes(messageId) 
+          ? prev.filter(id => id !== messageId) 
+          : [...prev, messageId]
+      );
+    } catch (error) {
+      console.error('Error toggling star status:', error);
+      // You might want to add a toast notification here to show the error to the user
+    }
+  };
+
   return (
     <div className="max-w-7xl relative mx-auto h-[100dvh] flex flex-col items-center space-y-12">
       <div className="absolute top-4 right-4">
@@ -150,6 +200,9 @@ export default function HomePage() {
           <div className="flex flex-col gap-4">
             {messages.map((message, index) => (
               <div key={index} className={`flex flex-row items-start gap-2 ${message.sender === 'AI' ? 'justify-start' : 'justify-end'}`}>
+                <button onClick={() => toggleStarMessage(message.id)} className={`star-button ${starredMessages.includes(message.id) ? 'starred' : ''}`}>
+                  <Star className={`w-5 h-5 ${starredMessages.includes(message.id) ? 'text-yellow-500' : 'text-gray-500'}`} />
+                </button>
                 {message.sender === 'AI' && (
                   <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center">
                     <Bot size={18} />

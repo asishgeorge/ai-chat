@@ -66,7 +66,7 @@ export async function POST(req: Request) {
                 content: message,
                 sender: 'USER',
                 status: 'COMPLETED',
-                llm: null
+                llm: model
             },
         });
 
@@ -77,7 +77,7 @@ export async function POST(req: Request) {
                 content: '',
                 sender: 'AI',
                 status: 'PENDING',
-                llm: null
+                llm: model
             },
         });
 
