@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from '@/lib/primsa';
-
+import { Prisma } from "@prisma/client";
 
 export async function POST(req: NextRequest) {
   try {
@@ -52,14 +52,16 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({ success: true });
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error in star message API:", error);
     // If the error is due to duplicate starring or star not found, return 400
-    if (error.code === 'P2002' || error.code === 'P2025') {
-      return NextResponse.json(
-        { error: "Invalid star operation" },
-        { status: 400 }
-      );
+    if(error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === 'P2002' || error.code === 'P2025') {
+        return NextResponse.json(
+          { error: "Invalid star operation" },
+          { status: 400 }
+        );
+      }
     }
     return NextResponse.json(
       { error: "Failed to update message star status" },
