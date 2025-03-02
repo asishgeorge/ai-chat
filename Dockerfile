@@ -12,6 +12,7 @@ WORKDIR /app
 
 ARG OPENAI_API_KEY 
 ARG DATABASE_URL
+RUN echo $DATABASE_URL
 
 # Install dependencies based on the preferred package manager
 COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* .npmrc* ./
@@ -46,6 +47,10 @@ FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+ARG OPENAI_API_KEY 
+ARG DATABASE_URL
+RUN echo $DATABASE_URL
+
 # Uncomment the following line in case you want to disable telemetry during runtime.
 # ENV NEXT_TELEMETRY_DISABLED=1
 
